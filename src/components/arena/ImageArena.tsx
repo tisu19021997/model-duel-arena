@@ -17,8 +17,8 @@ export type ArenaResult = {
   bothBad: number;
   votes: Array<{
     round: number;
-    left: { name: string; model: string };
-    right: { name: string; model: string };
+    left: { name: string; model: string; id: string };
+    right: { name: string; model: string; id: string };
     choice: "left" | "right" | "tie" | "both";
     winnerModel?: string | null;
   }>;
@@ -29,6 +29,7 @@ type LoadedImage = {
   url: string;
   model: string;
   name: string;
+  id: string; // identifier after model prefix (e.g., 001)
 };
 
 function parseModelPrefix(filename: string): string {
@@ -37,6 +38,22 @@ function parseModelPrefix(filename: string): string {
   const partsByDash = base.split("-");
   const pick = partsByUnderscore.length <= partsByDash.length ? partsByUnderscore : partsByDash;
   return pick[0] || "model";
+}
+
+function parseIdSuffix(filename: string, modelPrefix?: string): string {
+  const base = filename.replace(/\.[^/.]+$/, "");
+  let rest = base;
+  if (modelPrefix && base.toLowerCase().startsWith(modelPrefix.toLowerCase())) {
+    rest = base.slice(modelPrefix.length);
+  } else {
+    const idxUnd = base.indexOf("_");
+    const idxDash = base.indexOf("-");
+    const indices = [idxUnd, idxDash].filter((i) => i >= 0).sort((a, b) => a - b);
+    const idx = indices.length ? indices[0] : -1;
+    rest = idx >= 0 ? base.slice(idx + 1) : base;
+  }
+  rest = rest.replace(/^[\-_.\s]+/, "");
+  return rest || base;
 }
 
 function downloadJSON(filename: string, data: any) {
@@ -73,48 +90,63 @@ export default function ImageArena({ defaultRounds = 20 }: { defaultRounds?: num
     return map;
   }, [images]);
 
-  function onFileChange(files: FileList | null) {
-    if (!files || files.length === 0) return;
-    const imgs: LoadedImage[] = [];
-    for (const f of Array.from(files)) {
-      if (!f.type.startsWith("image/")) continue;
-      const url = URL.createObjectURL(f);
-      imgs.push({ file: f, url, model: parseModelPrefix(f.name), name: f.name });
-    }
-    if (imgs.length === 0) {
-      toast.error("Please select image files.");
-      return;
-    }
-    setImages(imgs);
-    toast.success(`Loaded ${imgs.length} images across ${new Set(imgs.map(i=>i.model)).size} models.`);
+function onFileChange(files: FileList | null) {
+  if (!files || files.length === 0) return;
+  const imgs: LoadedImage[] = [];
+  for (const f of Array.from(files)) {
+    if (!f.type.startsWith("image/")) continue;
+    const url = URL.createObjectURL(f);
+    const model = parseModelPrefix(f.name);
+    const id = parseIdSuffix(f.name, model);
+    imgs.push({ file: f, url, model, name: f.name, id });
+  }
+  if (imgs.length === 0) {
+    toast.error("Please select image files.");
+    return;
+  }
+  setImages(imgs);
+  toast.success(`Loaded ${imgs.length} images across ${new Set(imgs.map(i=>i.model)).size} models.`);
+}
+
+function startArena() {
+  const [m1, m2] = models;
+  if (!m1 || !m2) {
+    toast.error("Please provide images from exactly two models (use filename prefixes).");
+    return;
   }
 
-  function startArena() {
-    const [m1, m2] = models;
-    if (!m1 || !m2) {
-      toast.error("Please provide images from exactly two models (use filename prefixes).");
-      return;
-    }
-    const list1 = (grouped[m1] || []).slice().sort(() => Math.random() - 0.5);
-    const list2 = (grouped[m2] || []).slice().sort(() => Math.random() - 0.5);
-    const maxRounds = Math.min(rounds, list1.length, list2.length);
-    if (maxRounds === 0) {
-      toast.error("Not enough images for both models.");
-      return;
-    }
-    const newPairs: Array<{ left: LoadedImage; right: LoadedImage }> = [];
-    for (let i = 0; i < maxRounds; i++) {
-      const a = list1[i];
-      const b = list2[i];
-      // Randomize left/right to hide model bias
-      if (Math.random() < 0.5) newPairs.push({ left: a, right: b });
-      else newPairs.push({ left: b, right: a });
-    }
-    votesRef.current = [];
-    setPairs(newPairs);
-    setCurrent(0);
-    setPhase("playing");
+  // Build maps by id for each model
+  const map1: Record<string, LoadedImage> = {};
+  const map2: Record<string, LoadedImage> = {};
+  for (const img of images) {
+    if (img.model === m1) map1[img.id] = img;
+    else if (img.model === m2) map2[img.id] = img;
   }
+
+  const commonIds = Object.keys(map1).filter((id) => map2[id]);
+  if (commonIds.length === 0) {
+    toast.error("No matching pairs found (match by id after prefix, e.g., A_001 with B_001).");
+    return;
+  }
+
+  // Shuffle order but keep id-pairing. Limit by rounds.
+  const order = commonIds.sort(() => Math.random() - 0.5);
+  const maxRounds = Math.min(rounds, order.length);
+
+  const newPairs: Array<{ left: LoadedImage; right: LoadedImage }> = [];
+  for (let i = 0; i < maxRounds; i++) {
+    const id = order[i];
+    const a = map1[id]!;
+    const b = map2[id]!;
+    if (Math.random() < 0.5) newPairs.push({ left: a, right: b });
+    else newPairs.push({ left: b, right: a });
+  }
+
+  votesRef.current = [];
+  setPairs(newPairs);
+  setCurrent(0);
+  setPhase("playing");
+}
 
   function vote(choice: "left" | "right" | "tie" | "both") {
     const pair = pairs[current];
@@ -125,8 +157,8 @@ export default function ImageArena({ defaultRounds = 20 }: { defaultRounds?: num
 
     votesRef.current.push({
       round: current + 1,
-      left: { name: pair.left.name, model: pair.left.model },
-      right: { name: pair.right.name, model: pair.right.model },
+      left: { name: pair.left.name, model: pair.left.model, id: pair.left.id },
+      right: { name: pair.right.name, model: pair.right.model, id: pair.right.id },
       choice,
       winnerModel,
     });
@@ -207,7 +239,7 @@ export default function ImageArena({ defaultRounds = 20 }: { defaultRounds?: num
                 <Label htmlFor="images">Upload images (both models mixed)</Label>
                 <Input id="images" type="file" accept="image/*" multiple onChange={(e) => onFileChange(e.target.files)} />
                 <p className="text-sm text-muted-foreground">
-                  Filenames must start with the model prefix, e.g. modelA_001.jpg, modelB-002.png
+                  Filenames must start with the model prefix. Images are paired by the id after the prefix (e.g., modelA_001 with modelB_001).
                 </p>
               </div>
               <div className="space-y-3">
