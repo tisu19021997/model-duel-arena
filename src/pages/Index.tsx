@@ -1,13 +1,24 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import ImageArena from "@/components/arena/ImageArena";
+import { Helmet } from "react-helmet-async";
 
 const Index = () => {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold mb-4">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
+    <main className="min-h-screen bg-gradient-to-br from-background to-muted/40 py-14">
+      <Helmet>
+        <title>Image Model Arena — Blind Image Comparison</title>
+        <meta name="description" content="Blind pairwise image comparison arena. Upload images from two models and export results as JSON." />
+        <link rel="canonical" href="/" />
+      </Helmet>
+
+      <section className="container mb-10 text-center">
+        <h1 className="text-4xl font-bold mb-3">Image Model Arena</h1>
+        <p className="text-muted-foreground max-w-2xl mx-auto">Upload images from two different models (use filename prefixes), compare them blindly across configurable rounds, and automatically download a JSON summary at the end.</p>
+      </section>
+
+      <section className="container">
+        <ImageArena />
+      </section>
+    </main>
   );
 };
 
