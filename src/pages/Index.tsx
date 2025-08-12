@@ -12,7 +12,6 @@ const Index = () => {
 
       <section className="container mb-10 text-center">
         <h1 className="text-4xl font-bold mb-3">Image Model Arena</h1>
-        <p className="text-muted-foreground max-w-2xl mx-auto">Upload images from two different models (use filename prefixes), compare them blindly across configurable rounds, and automatically download a JSON summary at the end.</p>
       </section>
 
       <section className="container">

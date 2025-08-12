@@ -1,11 +1,11 @@
 import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { Helmet } from "react-helmet-async";
+import { useEffect, useCallback } from "react";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { CheckCircle2 } from "lucide-react";
 
 export type ArenaResult = {
   timestamp: string;
@@ -33,12 +33,27 @@ type LoadedImage = {
   source: "upload" | "public";
 };
 
+function normalizeId(id: string): string {
+  if (!id) return "";
+  const trimmed = String(id).trim();
+  const cleaned = trimmed.replace(/^[\-_.\s]+/, "");
+  if (/^\d+$/.test(cleaned)) {
+    const noLeading = cleaned.replace(/^0+/, "");
+    return noLeading === "" ? "0" : noLeading;
+  }
+  return cleaned;
+}
+
 function parseModelPrefix(filename: string): string {
   const base = filename.replace(/\.[^/.]+$/, "");
-  const partsByUnderscore = base.split("_");
-  const partsByDash = base.split("-");
-  const pick = partsByUnderscore.length <= partsByDash.length ? partsByUnderscore : partsByDash;
-  return pick[0] || "model";
+  const idxUnd = base.indexOf("_");
+  const idxDash = base.indexOf("-");
+  const indices = [idxUnd, idxDash].filter((i) => i >= 0).sort((a, b) => a - b);
+  if (indices.length > 0) {
+    return base.slice(0, indices[0]) || "model";
+  }
+  // No separators found; fall back to the whole base name
+  return base || "model";
 }
 
 function parseIdSuffix(filename: string, modelPrefix?: string): string {
@@ -54,7 +69,7 @@ function parseIdSuffix(filename: string, modelPrefix?: string): string {
     rest = idx >= 0 ? base.slice(idx + 1) : base;
   }
   rest = rest.replace(/^[\-_.\s]+/, "");
-  return rest || base;
+  return normalizeId(rest || base);
 }
 
 function downloadJSON(filename: string, data: any) {
@@ -75,7 +90,10 @@ export default function ImageArena({ defaultRounds = 20 }: { defaultRounds?: num
   const [phase, setPhase] = useState<"config" | "playing" | "results">("config");
   const [current, setCurrent] = useState(0);
   const [pairs, setPairs] = useState<Array<{ left: LoadedImage; right: LoadedImage }>>([]);
+  const [instructionsById, setInstructionsById] = useState<Record<string, string>>({});
   const votesRef = useRef<ArenaResult["votes"]>([]);
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null);
+  const [justVoted, setJustVoted] = useState<"left" | "right" | null>(null);
 
   const withBase = (path: string) => {
     const envBase = (import.meta as any)?.env?.BASE_URL ?? "/";
@@ -107,6 +125,15 @@ export default function ImageArena({ defaultRounds = 20 }: { defaultRounds?: num
     return merged;
   }
 
+  function shuffleArray<T>(items: T[]): T[] {
+    const a = items.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
   const models = useMemo(() => {
     const set = new Set(images.map((i) => i.model));
     return Array.from(set).slice(0, 2) as [string, string];
@@ -120,6 +147,30 @@ export default function ImageArena({ defaultRounds = 20 }: { defaultRounds?: num
     }
     return map;
   }, [images]);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (phase !== "playing") return;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      vote("left");
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      vote("right");
+    }
+  }, [phase, current, pairs]);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
+
+  // Auto-load assets from public on first render
+  useEffect(() => {
+    // Intentionally ignore errors here; toasts inside functions will surface issues
+    loadFromPublicFolder().catch(() => {});
+    loadInstructionsFromPublic().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
 function onFileChange(files: FileList | null) {
   if (!files || files.length === 0) return;
@@ -139,6 +190,77 @@ function onFileChange(files: FileList | null) {
   const total = imgs.length;
   const modelsDetected = new Set(imgs.map((i) => i.model)).size;
   toast.success(`Added ${total} images from upload across ${modelsDetected} models.`);
+}
+
+async function onCsvChange(files: FileList | null) {
+  if (!files || files.length === 0) return;
+  const file = files[0];
+  try {
+    const text = await file.text();
+    const parsed = parseInstructionsCSV(text);
+    const count = Object.keys(parsed).length;
+    if (count === 0) {
+      toast.error("No instructions found in the CSV (expect header 'id;instruction' or 'id,instruction').");
+      return;
+    }
+    setInstructionsById(parsed);
+    toast.success(`Loaded ${count} instructions from CSV.`);
+  } catch (err) {
+    toast.error("Failed to read CSV file.");
+  }
+}
+
+async function loadInstructionsFromPublic() {
+  try {
+    const names = ["instruction.csv", "instructions.csv"]; // prefer singular, then plural
+    const loaded: Record<string, string> = {};
+    const used: string[] = [];
+    for (const name of names) {
+      const res = await fetch(withBase(name), { cache: "no-store" });
+      if (res.ok) {
+        const text = await res.text();
+        const parsed = parseInstructionsCSV(text);
+        if (Object.keys(parsed).length > 0) {
+          Object.assign(loaded, parsed);
+          used.push(name);
+        }
+      }
+    }
+    const count = Object.keys(loaded).length;
+    if (count === 0) {
+      toast.error("No CSV found or empty (/instruction.csv or /instructions.csv)");
+      return;
+    }
+    setInstructionsById(loaded);
+    toast.success(`Loaded ${count} instructions from ${used.map((u) => `/${u}`).join(" + ")}`);
+  } catch (err) {
+    toast.error("Failed to load CSV from public folder");
+  }
+}
+
+function parseInstructionsCSV(text: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return map;
+  const first = lines[0];
+  const semi = (first.match(/;/g) || []).length;
+  const comma = (first.match(/,/g) || []).length;
+  const delim = semi >= comma ? ";" : ",";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const idx = line.indexOf(delim);
+    if (idx < 0) continue;
+    let id = line.slice(0, idx).trim();
+    let instruction = line.slice(idx + 1).trim();
+    id = id.replace(/^\"|\"$/g, "");
+    instruction = instruction.replace(/^\"|\"$/g, "");
+    if (i === 0 && id.toLowerCase() === "id") continue; // skip header
+    if (!id) continue;
+    const norm = normalizeId(String(id));
+    map[String(id)] = instruction;
+    map[norm] = instruction;
+  }
+  return map;
 }
 
 async function loadFromPublicFolder() {
@@ -181,7 +303,8 @@ async function loadFromPublicFolder() {
       return;
     }
 
-    const publicImgs: LoadedImage[] = unique.map((name) => {
+    const shuffledNames = shuffleArray(unique);
+    const publicImgs: LoadedImage[] = shuffledNames.map((name) => {
       const baseName = name.split('/').pop() || name;
       const model = parseModelPrefix(baseName);
       const id = parseIdSuffix(baseName, model);
@@ -221,7 +344,7 @@ function startArena() {
   }
 
   // Shuffle order but keep id-pairing. Limit by rounds.
-  const order = commonIds.sort(() => Math.random() - 0.5);
+  const order = shuffleArray(commonIds);
   const maxRounds = Math.min(rounds, order.length);
 
   const newPairs: Array<{ left: LoadedImage; right: LoadedImage }> = [];
@@ -255,11 +378,19 @@ function startArena() {
     });
 
     const next = current + 1;
-    if (next >= pairs.length) {
-      finish();
-    } else {
-      setCurrent(next);
+    // For left/right, briefly show a green tick before advancing
+    if (choice === "left" || choice === "right") {
+      setJustVoted(choice);
+      window.setTimeout(() => {
+        setJustVoted(null);
+        if (next >= pairs.length) finish();
+        else setCurrent(next);
+      }, 300);
+      return;
     }
+    // Tie / Both: advance immediately
+    if (next >= pairs.length) finish();
+    else setCurrent(next);
   }
 
   function finish() {
@@ -325,26 +456,9 @@ function startArena() {
             <CardTitle className="text-2xl">Setup your arena</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid gap-6 sm:grid-cols-2">
-              <div className="space-y-3">
-                <Label htmlFor="images">Upload images (both models mixed)</Label>
-                <Input id="images" type="file" accept="image/*" multiple onChange={(e) => onFileChange(e.target.files)} />
-                <Button variant="outline" className="mt-2" onClick={loadFromPublicFolder}>
-                  Load all from /images
-                </Button>
-                <p className="text-sm text-muted-foreground">
-                  Filenames must start with the model prefix. Images are paired by the id after the prefix (e.g., modelA_001 with modelB_001). You can also place files in <code>public/images</code> and click the button to load them.
-                </p>
-              </div>
-              <div className="space-y-3">
-                <Label htmlFor="rounds">Rounds</Label>
-                <Input id="rounds" type="number" min={1} value={rounds}
-                  onChange={(e) => setRounds(Math.max(1, Number(e.target.value)))} />
-                <p className="text-sm text-muted-foreground">Max rounds will be limited by the smaller model set.</p>
-              </div>
-            </div>
-
-            <Separator className="my-6" />
+            <p className="text-sm text-muted-foreground mb-6">
+              You are about to start an image arena.
+            </p>
             <div className="grid gap-4 sm:grid-cols-3">
               <div>
                 <p className="text-sm text-muted-foreground">Detected models</p>
@@ -372,9 +486,21 @@ function startArena() {
               </div>
             </div>
 
-            <div className="mt-8 flex justify-end gap-3">
-              <Button variant="secondary" onClick={() => setImages([])} disabled={!images.length}>Clear</Button>
-              <Button onClick={startArena} disabled={images.length === 0}>Start Arena</Button>
+            <div className="mt-10 flex justify-center">
+              <Button
+                onClick={startArena}
+                disabled={images.length === 0}
+                className="h-20 px-12 text-2xl"
+              >
+                Start Arena
+              </Button>
+            </div>
+
+            {/* Hidden controls retained for functionality */}
+            <div className="hidden">
+              <input id="images" type="file" accept="image/*" multiple onChange={(e) => onFileChange((e.target as HTMLInputElement).files)} />
+              <input id="csv" type="file" accept=".csv,text/csv" onChange={(e) => onCsvChange((e.target as HTMLInputElement).files)} />
+              <button onClick={() => setImages([])}>Clear</button>
             </div>
           </CardContent>
         </Card>
@@ -382,26 +508,49 @@ function startArena() {
 
       {phase === "playing" && (
         <div className="mx-auto max-w-6xl">
-          <div className="mb-4 text-sm text-muted-foreground">Round {current + 1} / {pairs.length} — {progress}%</div>
+          <div className="mb-2 text-sm text-muted-foreground">Round {current + 1} / {pairs.length} — {progress}%</div>
+          {pairs[current] && (
+            <div className="mb-4 rounded-md border p-4 bg-muted/40">
+              {(() => {
+                const left = pairs[current]!.left;
+                const id = left?.id ?? "";
+                const instruction = instructionsById[id];
+                return (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Prompt</div>
+                    <div className="whitespace-pre-wrap text-sm">{instruction || "—"}</div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           <div className="grid gap-6 md:grid-cols-2">
             {([pairs[current]?.left, pairs[current]?.right] as const).map((img, idx) => (
-              <Card key={idx} className="overflow-hidden group">
+              <Card key={idx} className="overflow-hidden group relative">
                 <CardContent className="p-0">
                   {img && (
-                    <img
-                      src={img.url}
-                      loading="lazy"
-                      alt={`Arena candidate ${idx + 1}`}
-                      className="aspect-square w-full object-cover transition-transform duration-300 group-hover:scale-[1.01]"
-                    />
+                    <div className="aspect-square w-full bg-muted/20 flex items-center justify-center">
+                      <img
+                        src={img.url}
+                        loading="lazy"
+                        alt={`Arena candidate ${idx + 1}`}
+                        className="max-h-full max-w-full object-contain cursor-zoom-in"
+                        onClick={() => setZoomSrc(img.url)}
+                      />
+                      {justVoted && ((justVoted === "left" && idx === 0) || (justVoted === "right" && idx === 1)) && (
+                        <div className="absolute right-2 top-2 rounded-full bg-white/90 p-1 shadow">
+                          <CheckCircle2 className="h-6 w-6 text-green-600" />
+                        </div>
+                      )}
+                    </div>
                   )}
                 </CardContent>
                 <div className="p-4 flex gap-3">
-                  <Button className="flex-1" onClick={() => vote(idx === 0 ? "left" : "right")}>This one</Button>
+                  <Button className="flex-1" onClick={() => vote(idx === 0 ? "left" : "right")} disabled={!!justVoted}>This one</Button>
                   {idx === 1 && (
                     <div className="flex gap-2">
-                      <Button variant="outline" onClick={() => vote("tie")}>Tie</Button>
-                      <Button variant="outline" onClick={() => vote("both")}>Both bad</Button>
+                      <Button variant="outline" onClick={() => vote("tie")} disabled={!!justVoted}>Tie</Button>
+                      <Button variant="outline" onClick={() => vote("both")} disabled={!!justVoted}>Both bad</Button>
                     </div>
                   )}
                 </div>
@@ -424,6 +573,14 @@ function startArena() {
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={!!zoomSrc} onOpenChange={(open) => !open && setZoomSrc(null)}>
+        <DialogContent className="w-[min(95vw,1200px)] max-w-none p-0 bg-transparent border-0 shadow-none">
+          {zoomSrc && (
+            <img src={zoomSrc} alt="Zoomed" className="w-full h-[80vh] object-contain bg-black/80" />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
