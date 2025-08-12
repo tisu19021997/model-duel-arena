@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Helmet } from "react-helmet-async";
 import { useEffect, useCallback } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, ArrowLeft, ArrowRight } from "lucide-react";
 
 export type ArenaResult = {
   timestamp: string;
@@ -19,7 +19,7 @@ export type ArenaResult = {
     round: number;
     left: { name: string; model: string; id: string };
     right: { name: string; model: string; id: string };
-    choice: "left" | "right" | "tie" | "both";
+    choice: "left" | "right";
     winnerModel?: string | null;
   }>;
 };
@@ -204,7 +204,7 @@ async function onCsvChange(files: FileList | null) {
       return;
     }
     setInstructionsById(parsed);
-    toast.success(`Loaded ${count} instructions from CSV.`);
+    toast.success(`Loaded ${count} instructions.`);
   } catch (err) {
     toast.error("Failed to read CSV file.");
   }
@@ -232,7 +232,7 @@ async function loadInstructionsFromPublic() {
       return;
     }
     setInstructionsById(loaded);
-    toast.success(`Loaded ${count} instructions from ${used.map((u) => `/${u}`).join(" + ")}`);
+    toast.success(`Loaded ${count} instructions.`);
   } catch (err) {
     toast.error("Failed to load CSV from public folder");
   }
@@ -315,7 +315,7 @@ async function loadFromPublicFolder() {
     setImages((prev) => mergeUniqueByUrl(prev, publicImgs));
     const modelsDetected = new Set(publicImgs.map((i) => i.model)).size;
     toast.success(
-      `Added ${publicImgs.length} public images across ${modelsDetected} models (${loadedFrom}).`
+      `Loaded ${publicImgs.length} public images across ${modelsDetected} models.`
     );
   } catch (err) {
     throw err;
@@ -343,13 +343,11 @@ function startArena() {
     return;
   }
 
-  // Shuffle order but keep id-pairing. Limit by rounds.
+  // Shuffle order but keep id-pairing. Use all pairs.
   const order = shuffleArray(commonIds);
-  const maxRounds = Math.min(rounds, order.length);
 
   const newPairs: Array<{ left: LoadedImage; right: LoadedImage }> = [];
-  for (let i = 0; i < maxRounds; i++) {
-    const id = order[i];
+  for (const id of order) {
     const a = map1[id]!;
     const b = map2[id]!;
     if (Math.random() < 0.5) newPairs.push({ left: a, right: b });
@@ -362,7 +360,7 @@ function startArena() {
   setPhase("playing");
 }
 
-  function vote(choice: "left" | "right" | "tie" | "both") {
+  function vote(choice: "left" | "right") {
     const pair = pairs[current];
     if (!pair) return;
 
@@ -388,7 +386,7 @@ function startArena() {
       }, 300);
       return;
     }
-    // Tie / Both: advance immediately
+    // Advance
     if (next >= pairs.length) finish();
     else setCurrent(next);
   }
@@ -400,9 +398,7 @@ function startArena() {
     let bothBad = 0;
 
     for (const v of votesRef.current) {
-      if (v.choice === "tie") ties++;
-      else if (v.choice === "both") bothBad++;
-      else if (v.winnerModel) winsByModel[v.winnerModel]++;
+      if (v.winnerModel) winsByModel[v.winnerModel]++;
     }
 
       const result: ArenaResult = {
@@ -411,8 +407,8 @@ function startArena() {
       roundsPlanned: rounds,
       roundsCompleted: votesRef.current.length,
       winsByModel,
-      ties,
-      bothBad,
+      ties: 0,
+      bothBad: 0,
       votes: votesRef.current,
     };
 
@@ -453,29 +449,15 @@ function startArena() {
       {phase === "config" && (
         <Card className="mx-auto max-w-5xl backdrop-blur supports-[backdrop-filter]:bg-background/70">
           <CardHeader>
-            <CardTitle className="text-2xl">Setup your arena</CardTitle>
+            <CardTitle className="text-2xl">Image Model Arena</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground mb-6">
-              You are about to start an image arena.
+            <p className="text-md text-muted-foreground mb-6">
+              You are about to start an image arena. For faster voting, use the arrow keys.
             </p>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div>
-                <p className="text-sm text-muted-foreground">Detected models</p>
-                <div className="mt-2 text-sm">
-                  {models && models.length > 0 ? (
-                    <ul className="list-disc pl-5">
-                      {models.map((m) => (
-                        <li key={m}>{m}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <span>—</span>
-                  )}
-                </div>
-              </div>
+            {/* <div className="grid gap-4 sm:grid-cols-3">
               <div className="sm:col-span-2">
-                <p className="text-sm text-muted-foreground">Counts by model</p>
+                <p className="text-md text-muted-foreground">Counts by model</p>
                 <div className="mt-2 flex gap-6 text-sm">
                   {Object.entries(grouped).map(([m, list]) => (
                     <div key={m}>
@@ -484,13 +466,13 @@ function startArena() {
                   ))}
                 </div>
               </div>
-            </div>
+            </div> */}
 
             <div className="mt-10 flex justify-center">
               <Button
                 onClick={startArena}
                 disabled={images.length === 0}
-                className="h-20 px-12 text-2xl"
+                className="h-12 px-6 text-xl"
               >
                 Start Arena
               </Button>
@@ -545,14 +527,15 @@ function startArena() {
                     </div>
                   )}
                 </CardContent>
-                <div className="p-4 flex gap-3">
-                  <Button className="flex-1" onClick={() => vote(idx === 0 ? "left" : "right")} disabled={!!justVoted}>This one</Button>
-                  {idx === 1 && (
-                    <div className="flex gap-2">
-                      <Button variant="outline" onClick={() => vote("tie")} disabled={!!justVoted}>Tie</Button>
-                      <Button variant="outline" onClick={() => vote("both")} disabled={!!justVoted}>Both bad</Button>
-                    </div>
-                  )}
+                  <div className="p-4 flex gap-3">
+                  <Button className="flex-1 inline-flex items-center justify-center gap-2" onClick={() => vote(idx === 0 ? "left" : "right")} disabled={!!justVoted}>
+                    {idx === 0 ? (
+                      <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    <span>This one</span>
+                  </Button>
                 </div>
               </Card>
             ))}
