@@ -77,9 +77,20 @@ export default function ImageArena({ defaultRounds = 20 }: { defaultRounds?: num
   const [pairs, setPairs] = useState<Array<{ left: LoadedImage; right: LoadedImage }>>([]);
   const votesRef = useRef<ArenaResult["votes"]>([]);
 
-  const baseUrl = (import.meta as any)?.env?.BASE_URL ?? "/";
   const withBase = (path: string) => {
-    const a = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+    const envBase = (import.meta as any)?.env?.BASE_URL ?? "/";
+    let base = envBase;
+    if (!base || base === "/") {
+      // Fallback for GitHub Pages project sites
+      try {
+        const isGh = typeof window !== "undefined" && window.location.hostname.endsWith("github.io");
+        if (isGh) {
+          const segments = window.location.pathname.split("/").filter(Boolean);
+          if (segments.length > 0) base = `/${segments[0]}/`;
+        }
+      } catch {}
+    }
+    const a = base.endsWith("/") ? base.slice(0, -1) : base;
     const b = path.startsWith("/") ? path : `/${path}`;
     return `${a}${b}`;
   };
@@ -165,7 +176,10 @@ async function loadFromPublicFolder() {
     }
 
     const unique = Array.from(new Set(fileNames));
-    if (unique.length === 0) throw new Error("no-images-found");
+    if (unique.length === 0) {
+      toast.error("No images found under /images. Ensure files are committed and reloaded.");
+      return;
+    }
 
     const publicImgs: LoadedImage[] = unique.map((name) => {
       const baseName = name.split('/').pop() || name;
@@ -260,7 +274,7 @@ function startArena() {
       else if (v.winnerModel) winsByModel[v.winnerModel]++;
     }
 
-    const result: ArenaResult = {
+      const result: ArenaResult = {
       timestamp: new Date().toISOString(),
       models: [m1, m2],
       roundsPlanned: rounds,
